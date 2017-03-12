@@ -1,0 +1,287 @@
+---
+title: "titanic_eda"
+author: "Samy Soualem"
+date: "March 11, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(Amelia)
+library(caret)
+library(ROCR)
+```
+
+
+## Loading files
+```{r cars}
+data_dir <- "data"
+# TODO : convert to function
+
+###################################################
+# IMPORTANT : convert "" to NA
+###################################################
+train <- read.csv(file.path(data_dir, "train.csv"), stringsAsFactors = FALSE, na.strings = "")
+
+
+
+## Convert relevant variables to factors
+train$Survived <- factor(train$Survived, levels = c(0, 1), labels = c("Died", "Survived"))
+# Ordinal factor
+train$Pclass <- ordered(train$Pclass)
+train$Sex <- factor(train$Sex)
+train$Embarked <- factor(train$Embarked, levels = c("C", "Q", "S"), labels = c("Cherbourg", "Queenstown", "Southampton"))
+
+str(train)
+
+```
+
+## Univariate analysis
+### Check missing data and number of distinct values
+```{r}
+sapply(train, function(x) sum(is.na(x)))
+sapply(train, function(x) length(unique(x)))
+
+missmap(train, main = "Missing values vs observed")
+```
+
+### Variables ditribution
+```{r}
+# Fare
+ggplot(data=train, aes(x = Fare)) +
+    geom_bar(stat = "bin")
+
+ggplot(data=train, aes(x = factor(0), y = Fare)) +
+  geom_boxplot() +
+  stat_boxplot(geom = "errorbar", width = 0.25) + # for whiskers
+  # To avoid displaying the dummy x variable
+  theme(axis.title.x=element_blank(),
+    axis.text.x=element_blank(),
+    axis.ticks.x=element_blank())
+
+# class
+ggplot(data=train, aes(x = Pclass)) +
+    geom_bar(stat = "count")
+
+# Cabin
+head(train$Cabin, 100)
+
+# name
+head(train$Name, 100)
+
+# Age
+ggplot(data=train, aes(x = Age)) +
+    geom_bar(stat = "bin")
+
+table(train$Age, useNA = "always")
+
+# nb spouses / siblings
+ggplot(data=train, aes(x = SibSp)) +
+    geom_bar(stat = "count")
+
+# nb parents / children
+ggplot(data=train, aes(x = Parch)) +
+    geom_bar(stat = "count")
+
+# port of embarkation
+ggplot(data=train, aes(x = Embarked)) +
+    geom_bar(stat = "count")
+
+```
+
+
+## Bivariate analysis
+```{r}
+# Survived vs class
+#table(train$Survived, train$Pclass, useNA = TRUE)
+# dplyr version instead of table to get the variable names
+count(train, Survived, Pclass)
+
+ggplot(data = train, aes(x = Pclass, fill = Survived)) + 
+  geom_bar(stat="count")  # count is by default
+print("Better class associated with higher survival rate")
+
+
+# Fare vs Survived
+ggplot(data = train, aes(x = Survived, y = Fare)) +
+  stat_boxplot(geom = "errorbar", width = 0.25) + # for whiskers
+  geom_boxplot()
+print("Higher fare associated with higher survival rate")
+print("TODO : check if fare is too correlated with class")
+
+# Fare vs class
+ggplot(data = train, aes(x = Pclass, y = Fare)) +
+  stat_boxplot(geom = "errorbar", width = 0.25) + # for whiskers
+  geom_boxplot()
+
+# Age vs survived
+ggplot(data = train, aes(x = Survived, y = Age)) +
+  stat_boxplot(geom = "errorbar", width = 0.25) + # for whiskers
+  geom_boxplot()
+print("Not clear if age associated with survival rate")
+
+# Survived vs Embarked
+ggplot(data = train, aes(x = Embarked, fill = Survived)) + 
+  geom_bar(stat="count")  # count is by default
+
+
+```
+
+## Missing values processing
+```{r}
+# Replace missing Age values by the mean
+train$Age[is.na(train$Age)] <- mean(train$Age, na.rm = TRUE)
+
+# TODO : check rpart or mice for more methods of predictive imputation 
+# and check distribution before and after to see if predictions look OK
+# https://www.kaggle.com/mrisdal/titanic/exploring-survival-on-the-titanic
+
+# TODO ? Remove rows with no port of embarkation because only 2 of them ?
+train <- filter(train, !is.na(Embarked))
+
+# UPDATE : see this Quora question to see why missing value imputation or row filtering is to be avoided
+# https://www.quora.com/How-can-I-deal-with-missing-values-in-a-predictive-model
+```
+
+
+## Split data in training and validation set (test set = Kaggle test set)
+```{r}
+train_idx <- createDataPartition(train$Survived, p = 0.8, list = FALSE)
+train_set <- train[train_idx, ]
+valid_set <- train[-train_idx, ]
+```
+
+
+## Logistic regression
+### Training
+```{r}
+# Keep subset of variables as potential predictors
+train_pred <- select(train_set, Survived, Pclass, Sex, Age, SibSp, Parch, Fare, Embarked)
+
+# Logistic regression using all predictors
+fit_all = glm(Survived ~ ., family = binomial(link = "logit"), data = train_pred)
+
+summary(fit_all)
+anova(fit_all)
+```
+
+### Prediction accuracy (on training set)
+```{r}
+
+train_pred <- predict(fit_all, newdata=train_set, type = "response")
+# 0.5 decision boundary
+train_pred <- ifelse(train_pred >= 0.5, 1, 0)
+train_pred <- factor(train_pred, levels = c(0, 1), labels = c("Died", "Survived"))
+
+#table(train_pred, train_set$Survived, useNA = "ifany")
+confusionMatrix(train_pred, train_set$Survived, positive = "Survived")
+```
+
+### Prediction accuracy (on validation set)
+```{r}
+
+valid_pred <- predict(fit_all, newdata=valid_set, type = "response")
+# 0.5 decision boundary
+valid_pred <- ifelse(valid_pred >= 0.5, 1, 0)
+valid_pred <- factor(valid_pred, levels = c(0, 1), labels = c("Died", "Survived"))
+
+confusionMatrix(valid_pred, valid_set$Survived, positive = "Survived")
+```
+
+## ROC curve and AUC
+```{r}
+valid_pred <- predict(fit_all, newdata=valid_set, type = "response")
+valid_pred_roc <- prediction(valid_pred, valid_set$Survived)
+valid_pred_perf <- performance(valid_pred_roc, measure = "tpr", x.measure = "fpr")
+# cutoff, FPR and TPR can be accessed in the "performance" objetct : use str for variable names
+# Example : head(valid_pred_perf@alpha.values[[1]]) for the cutoff values
+plot(valid_pred_perf, asp = 1)   # Force 1:1 y/x aspect ratio
+abline(a=0, b= 1)
+
+auc <- performance(valid_pred_roc, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+
+# Optimal cutoff value TBD based on what to optimize (accuracy, sensitivity or specifity for example)
+# Reminder :
+# - Sensitivity = TPR or recall
+# - Specifity = TNR or (1 - FPR)
+# Use F score to compare models with 1 metric
+```
+
+## Accuracy curve
+```{r}
+valid_acc <- performance(valid_pred_roc, measure = "acc")
+plot(valid_acc)
+```
+
+## Simpler model for prediction
+### Training set prediction
+```{r}
+fit_2 = glm(Survived ~ Pclass + Sex + Age + SibSp , family = binomial(link = "logit"), data = train_pred)
+
+summary(fit_2)
+anova(fit_2)
+
+
+train_pred_2 <- predict(fit_2, newdata=train_set, type = "response")
+# 0.5 decision boundary
+train_pred_2 <- ifelse(train_pred_2 >= 0.5, 1, 0)
+train_pred_2 <- factor(train_pred_2, levels = c(0, 1), labels = c("Died", "Survived"))
+
+
+confusionMatrix(train_pred_2, train_set$Survived, positive = "Survived")
+```
+
+### Validation set predictions
+```{r}
+valid_pred_2 <- predict(fit_2, newdata=valid_set, type = "response")
+# 0.5 decision boundary
+valid_pred_2 <- ifelse(valid_pred_2 >= 0.5, 1, 0)
+valid_pred_2 <- factor(valid_pred_2, levels = c(0, 1), labels = c("Died", "Survived"))
+
+
+confusionMatrix(valid_pred_2, valid_set$Survived, positive = "Survived")
+
+
+```
+
+## TODO : plot learning curve (training and CV accuracy vs number of samples in training set)
+### Goal : see if bias or variance problem
+
+
+## Test predictions
+```{r}
+test <- read.csv(file.path(data_dir, "test.csv"), stringsAsFactors = FALSE, na.strings = "")
+
+
+
+## Convert relevant variables to factors
+# Ordinal factor
+test$Pclass <- ordered(test$Pclass)
+test$Sex <- factor(test$Sex)
+test$Embarked <- factor(test$Embarked, levels = c("C", "Q", "S"), labels = c("Cherbourg", "Queenstown", "Southampton"))
+
+str(test)
+
+# Replace missing Age values by the mean of the training set
+test$Age[is.na(test$Age)] <- mean(train$Age, na.rm = TRUE)
+
+#missmap(test, main = "Missing values vs observed")
+
+test_pred <- predict(fit_2, newdata=test, type = "response")
+# 0.5 decision boundary
+test_pred <- ifelse(test_pred >= 0.5, 1, 0)
+test_pred <- factor(test_pred, levels = c(0, 1))
+
+submission <- data.frame(PassengerID = test$PassengerId, Survived = test_pred)
+write.csv(submission, file = "fit_2_submission.csv", row.names = FALSE, quote = FALSE)
+
+```
+
